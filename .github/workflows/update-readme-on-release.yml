@@ -1,0 +1,86 @@
+name: Update README on release
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  update-readme:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Compute versions
+        id: ver
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -eu
+          NEW_SHORT="${TAG#v}"
+          if [[ "$NEW_SHORT" =~ ^[0-9]+\.[0-9]+$ ]]; then
+            NEW_FULL="${NEW_SHORT}.0"
+          else
+            NEW_FULL="$NEW_SHORT"
+          fi
+
+          OLD_FULL=$(grep -oE 'eGateHelper-[0-9]+\.[0-9]+\.[0-9]+\.exe' README.md | head -1 | sed -E 's/eGateHelper-(.+)\.exe/\1/' || true)
+          OLD_SHORT=$(grep -oE 'releases/download/[0-9]+\.[0-9]+/' README.md | head -1 | sed -E 's|releases/download/(.+)/|\1|' || true)
+
+          if [[ -z "$OLD_SHORT" || -z "$OLD_FULL" ]]; then
+            echo "Could not detect current version in README." >&2
+            exit 1
+          fi
+
+          echo "old_short=$OLD_SHORT" >> "$GITHUB_OUTPUT"
+          echo "old_full=$OLD_FULL"   >> "$GITHUB_OUTPUT"
+          echo "new_short=$NEW_SHORT" >> "$GITHUB_OUTPUT"
+          echo "new_full=$NEW_FULL"   >> "$GITHUB_OUTPUT"
+          echo "Updating $OLD_SHORT -> $NEW_SHORT (full: $OLD_FULL -> $NEW_FULL)"
+
+      - name: Replace versions in README and assets
+        env:
+          OLD_SHORT: ${{ steps.ver.outputs.old_short }}
+          OLD_FULL: ${{ steps.ver.outputs.old_full }}
+          NEW_SHORT: ${{ steps.ver.outputs.new_short }}
+          NEW_FULL: ${{ steps.ver.outputs.new_full }}
+        run: |
+          set -eu
+          # Escape regex metacharacters in the search strings (versions only contain digits and dots,
+          # but dots match any char in a regex — escape them).
+          esc() { printf '%s' "$1" | sed 's/[.[\*^$/]/\\&/g'; }
+          OS_FULL=$(esc "$OLD_FULL")
+          OS_SHORT=$(esc "$OLD_SHORT")
+
+          # Replace the full version (X.Y.Z) first so the short-version pass (X.Y) doesn't
+          # corrupt the X.Y prefix inside a longer number.
+          for f in \
+            README.md \
+            assets/download-helper.svg \
+            assets/download-general.svg \
+            assets/download-accessibility.svg \
+            assets/download-lgclassic.svg \
+            assets/hero.svg
+          do
+            sed -i -E "s/${OS_FULL}/${NEW_FULL}/g" "$f"
+            sed -i -E "s/${OS_SHORT}/${NEW_SHORT}/g" "$f"
+          done
+
+      - name: Commit and push
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -eu
+          if git diff --quiet; then
+            echo "No changes to commit."
+            exit 0
+          fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add README.md assets/*.svg
+          git commit -m "Update README and assets for release ${TAG}"
+          git push origin main
